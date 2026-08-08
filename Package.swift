@@ -28,11 +28,12 @@ let package = Package(
         ),
         .executableTarget(
             name: "vault",
-            dependencies: ["VaultCore"],
+            dependencies: ["VaultCore", "CSystem"],
             path: "Sources/vault",
             swiftSettings: swift6Settings + releaseSettings,
             linkerSettings: [
                 .linkedFramework("Security"),
+                .linkedLibrary("iconv"),
                 // Match the Rust dist profile: local Swift symbols are not
                 // part of the shipped exec-wrapper contract.
                 .unsafeFlags(
@@ -40,6 +41,10 @@ let package = Package(
                     .when(configuration: .release)
                 ),
             ]
+        ),
+        .target(
+            name: "CSystem",
+            path: "Sources/CSystem"
         ),
         .testTarget(
             name: "VaultCoreTests",

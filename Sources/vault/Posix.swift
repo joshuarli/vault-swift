@@ -1,69 +1,92 @@
-// These declarations keep the executable on the Darwin C ABI without
-// importing the Swift Darwin overlay. The overlay adds compatibility dylibs
-// to the final load commands; vault only needs this small POSIX slice.
+import CSystem
 
 typealias CInt = Int32
-
-struct PosixTermios {
-    var c_iflag: UInt64 = 0
-    var c_oflag: UInt64 = 0
-    var c_cflag: UInt64 = 0
-    var c_lflag: UInt64 = 0
-    var c_cc: (
-        UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8,
-        UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8, UInt8
-    ) = (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
-    var c_ispeed: UInt64 = 0
-    var c_ospeed: UInt64 = 0
-}
+typealias PosixTermios = termios
 
 enum Posix {
-    static var echo: UInt64 { 0x00000008 }
-    static var echoNewline: UInt64 { 0x00000010 }
-    static var canonical: UInt64 { 0x00000100 }
-    static var terminalNow: CInt { 0 }
-    static var interrupted: CInt { 4 }
+    static var echo: tcflag_t { tcflag_t(ECHO) }
+    static var echoNewline: tcflag_t { tcflag_t(ECHONL) }
+    static var canonical: tcflag_t { tcflag_t(ICANON) }
+    static var terminalNow: CInt { TCSANOW }
+    static var interrupted: CInt { EINTR }
 }
 
-@_silgen_name("read")
-@unsafe func cRead(_ descriptor: CInt, _ buffer: UnsafeMutableRawPointer?, _ count: Int) -> Int
+@inline(__always)
+func cRead(_ descriptor: CInt, _ buffer: UnsafeMutableRawPointer?, _ count: Int) -> Int {
+    unsafe read(descriptor, buffer, count)
+}
 
-@_silgen_name("write")
-@unsafe func cWrite(_ descriptor: CInt, _ buffer: UnsafeRawPointer?, _ count: Int) -> Int
+@inline(__always)
+func cWrite(_ descriptor: CInt, _ buffer: UnsafeRawPointer?, _ count: Int) -> Int {
+    unsafe write(descriptor, buffer, count)
+}
 
-@_silgen_name("isatty")
-@unsafe func cIsATTY(_ descriptor: CInt) -> CInt
+@inline(__always)
+func cIsATTY(_ descriptor: CInt) -> CInt {
+    isatty(descriptor)
+}
 
-@_silgen_name("tcgetattr")
-@unsafe func cTCGetAttributes(_ descriptor: CInt, _ attributes: UnsafeMutablePointer<PosixTermios>) -> CInt
+@inline(__always)
+func cTCGetAttributes(_ descriptor: CInt, _ attributes: UnsafeMutablePointer<PosixTermios>) -> CInt {
+    unsafe tcgetattr(descriptor, attributes)
+}
 
-@_silgen_name("tcsetattr")
-@unsafe func cTCSetAttributes(_ descriptor: CInt, _ action: CInt, _ attributes: UnsafePointer<PosixTermios>) -> CInt
+@inline(__always)
+func cTCSetAttributes(_ descriptor: CInt, _ action: CInt, _ attributes: UnsafePointer<PosixTermios>) -> CInt {
+    unsafe tcsetattr(descriptor, action, attributes)
+}
 
-@_silgen_name("setenv")
-@unsafe func cSetEnvironment(_ name: UnsafePointer<CChar>, _ value: UnsafePointer<CChar>, _ overwrite: CInt) -> CInt
+@inline(__always)
+func cSetEnvironment(_ name: UnsafePointer<CChar>, _ value: UnsafePointer<CChar>, _ overwrite: CInt) -> CInt {
+    unsafe setenv(name, value, overwrite)
+}
 
-@_silgen_name("strdup")
-@unsafe func cDuplicate(_ string: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>?
+@inline(__always)
+func cDuplicate(_ string: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>? {
+    unsafe strdup(string)
+}
 
-@_silgen_name("posix_spawnp")
-@unsafe func cSpawn(
+@inline(__always)
+func cSpawn(
     _ process: UnsafeMutablePointer<CInt>,
     _ executable: UnsafePointer<CChar>,
     _ fileActions: UnsafeRawPointer?,
     _ attributes: UnsafeRawPointer?,
     _ arguments: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?,
     _ environment: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
-) -> CInt
+) -> CInt {
+    unsafe posix_spawnp(
+        process,
+        executable,
+        nil,
+        nil,
+        arguments,
+        environment
+    )
+}
 
-@_silgen_name("waitpid")
-@unsafe func cWait(_ process: CInt, _ status: UnsafeMutablePointer<CInt>, _ options: CInt) -> CInt
+@inline(__always)
+func cWait(_ process: CInt, _ status: UnsafeMutablePointer<CInt>, _ options: CInt) -> CInt {
+    unsafe waitpid(process, status, options)
+}
 
-@_silgen_name("_NSGetEnviron")
-@unsafe func cGetEnvironment() -> UnsafeMutablePointer<UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?>?
+@inline(__always)
+@unsafe func cGetEnvironment() -> UnsafeMutablePointer<UnsafeMutablePointer<CChar>?> {
+    guard let pointer = unsafe _NSGetEnviron() else {
+        preconditionFailure("_NSGetEnviron returned nil")
+    }
+    guard let environment = unsafe pointer.pointee else {
+        preconditionFailure("_NSGetEnviron returned a nil environment")
+    }
+    return unsafe environment
+}
 
-@_silgen_name("__error")
-@unsafe func cErrno() -> UnsafeMutablePointer<CInt>
+@inline(__always)
+func cErrno() -> UnsafeMutablePointer<CInt> {
+    unsafe __error()
+}
 
-@_silgen_name("exit")
-@unsafe func cExit(_ status: CInt) -> Never
+@inline(__always)
+func cExit(_ status: CInt) -> Never {
+    exit(status)
+}

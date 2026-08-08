@@ -172,7 +172,7 @@ struct VaultCommand {
             }
         }
 
-        let environment = unsafe cGetEnvironment()?.pointee
+        let environment = unsafe cGetEnvironment()
         var child: Int32 = 0
         let spawnStatus = unsafe command.withCString { commandPointer in
             unsafe cArguments.withUnsafeMutableBufferPointer { buffer in
@@ -202,9 +202,9 @@ struct VaultCommand {
 
         let signal = waitStatus & 0x7F
         if signal != 0 && signal != 0x7F {
-            unsafe cExit(128 + signal)
+            cExit(128 + signal)
         }
-        unsafe cExit((waitStatus >> 8) & 0xFF)
+        cExit((waitStatus >> 8) & 0xFF)
     }
 
     private static func requireExactArguments(
@@ -224,7 +224,7 @@ struct VaultCommand {
     }
 
     private static func readSecret(name: String, silent: Bool) throws -> String {
-        if unsafe cIsATTY(standardInput) == 1 {
+        if cIsATTY(standardInput) == 1 {
             if !silent {
                 write("Enter value for \(name): ", to: standardError)
             }
@@ -410,7 +410,7 @@ private func write(_ bytes: [UInt8], to descriptor: Int32) {
 
 private func fail(_ message: String) -> Never {
     write(message + "\n", to: standardError)
-    unsafe cExit(1)
+    cExit(1)
 }
 
 private func errnoValue() -> Int32 {
