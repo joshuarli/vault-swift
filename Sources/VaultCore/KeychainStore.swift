@@ -3,6 +3,8 @@ import Security
 
 /// The service namespace owned by vault. Accounts are environment variable
 /// names and values are stored as generic-password data in the login Keychain.
+/// New items use the modern item API, so macOS applies its normal
+/// application-scoped Keychain access policy.
 public struct KeychainStore: Sendable {
     public static let service = "dev.joshuarli.vault"
 
@@ -27,7 +29,7 @@ public struct KeychainStore: Sendable {
             throw KeychainError.operation(action: "set", name: name, status: updateStatus)
         }
 
-        try create(service: service, name: name, value: value)
+        try add(service: service, name: name, value: value)
     }
 
     public func secret(named name: String) throws -> String {
@@ -62,8 +64,10 @@ public struct KeychainStore: Sendable {
 
     public func deleteSecret(named name: String) throws {
         try validate(name: name)
-        let item = try findItem(named: name)
-        let deleteStatus = SecKeychainItemDelete(item)
+        let deleteStatus = SecItemDelete(query(service: service, name: name))
+        if deleteStatus == errSecItemNotFound {
+            throw KeychainError.notFound(name: name)
+        }
         guard deleteStatus == errSecSuccess else {
             throw KeychainError.operation(action: "delete", name: name, status: deleteStatus)
         }
@@ -117,68 +121,18 @@ public struct KeychainStore: Sendable {
         return names.count
     }
 
-    private func create(service: String, name: String, value: [UInt8]) throws {
-        var keychain: SecKeychain?
-        let defaultStatus = unsafe SecKeychainCopyDefault(&keychain)
-        guard defaultStatus == errSecSuccess, let keychain else {
-            throw KeychainError.operation(
-                action: "get default Keychain for set",
-                name: name,
-                status: defaultStatus
-            )
-        }
-
-        let storage = value.isEmpty ? [UInt8(0)] : value
-        let status = unsafe service.withCString { serviceCString in
-            unsafe name.withCString { accountCString in
-                unsafe storage.withUnsafeBytes { bytes in
-                    unsafe SecKeychainAddGenericPassword(
-                        keychain,
-                        UInt32(service.utf8.count),
-                        serviceCString,
-                        UInt32(name.utf8.count),
-                        accountCString,
-                        UInt32(value.count),
-                        bytes.baseAddress!,
-                        nil
-                    )
-                }
-            }
-        }
+    private func add(service: String, name: String, value: [UInt8]) throws {
+        let attributes = dictionary([
+            (kSecClass, kSecClassGenericPassword),
+            (kSecAttrService, string(service)),
+            (kSecAttrAccount, string(name)),
+            (kSecValueData, data(value)),
+        ])
+        let status = SecItemAdd(attributes, nil)
 
         guard status == errSecSuccess else {
             throw KeychainError.operation(action: "set", name: name, status: status)
         }
-    }
-
-    private func findItem(named name: String) throws -> SecKeychainItem {
-        var item: SecKeychainItem?
-        let status = unsafe service.withCString { serviceCString in
-            unsafe name.withCString { accountCString in
-                unsafe SecKeychainFindGenericPassword(
-                    nil,
-                    UInt32(service.utf8.count),
-                    serviceCString,
-                    UInt32(name.utf8.count),
-                    accountCString,
-                    nil,
-                    nil,
-                    &item
-                )
-            }
-        }
-
-        if status == errSecItemNotFound {
-            throw KeychainError.notFound(name: name)
-        }
-        guard status == errSecSuccess, let item else {
-            throw KeychainError.operation(
-                action: "find for delete",
-                name: name,
-                status: status
-            )
-        }
-        return item
     }
 
     private func query(service: String, name: String) -> CFDictionary {
