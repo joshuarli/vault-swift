@@ -33,6 +33,12 @@ let package = Package(
             swiftSettings: swift6Settings + releaseSettings,
             linkerSettings: [
                 .linkedFramework("Security"),
+                // Match the Rust dist profile: local Swift symbols are not
+                // part of the shipped exec-wrapper contract.
+                .unsafeFlags(
+                    ["-Xlinker", "-S", "-Xlinker", "-x"],
+                    .when(configuration: .release)
+                ),
             ]
         ),
         .testTarget(

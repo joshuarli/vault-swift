@@ -26,3 +26,7 @@ language mode, `NonisolatedNonsendingByDefault`, and strict memory safety.
 swift test
 swift build -c release --arch arm64
 ```
+
+The release executable is built with whole-module optimization and linker
+stripping (`-S` and `-x`). The implementation avoids Foundation and the Swift
+Darwin overlay in the executable path to keep this exec wrapper small.

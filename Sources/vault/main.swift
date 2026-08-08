@@ -1,6 +1,8 @@
-import Darwin
-import Foundation
 import VaultCore
+
+private let standardInput: Int32 = 0
+private let standardOutput: Int32 = 1
+private let standardError: Int32 = 2
 
 private let usage = """
 vault — macOS Keychain secret manager
@@ -28,12 +30,11 @@ Examples:
   vault -- cargo run
 """
 
-@main
 struct VaultCommand {
     static func main() {
         let arguments = Array(CommandLine.arguments.dropFirst())
         guard let first = arguments.first else {
-            writeStandardOutput(usage)
+            write(usage, to: standardOutput)
             return
         }
 
@@ -51,7 +52,7 @@ struct VaultCommand {
         case "purge":
             purge()
         case "-h", "--help", "help":
-            writeStandardOutput(usage)
+            write(usage, to: standardOutput)
         default:
             execute(arguments: arguments)
         }
@@ -63,7 +64,7 @@ struct VaultCommand {
 
         do {
             let value = try readSecret(name: name, silent: silent)
-            try KeychainStore().setSecret(name: name, value: Data(value.utf8))
+            try KeychainStore().setSecret(name: name, value: Array(value.utf8))
         } catch {
             fail(String(describing: error))
         }
@@ -73,7 +74,7 @@ struct VaultCommand {
         requireExactArguments(arguments, command: "get", count: 2)
         do {
             let value = try KeychainStore().secret(named: arguments[1])
-            writeStandardOutput(value + "\n")
+            write(value + "\n", to: standardOutput)
         } catch {
             fail(String(describing: error))
         }
@@ -94,7 +95,10 @@ struct VaultCommand {
         }
         do {
             let names = try KeychainStore().listSecrets()
-            writeStandardOutput(names.joined(separator: "\n") + (names.isEmpty ? "" : "\n"))
+            guard !names.isEmpty else {
+                return
+            }
+            write(names.joined(separator: "\n") + "\n", to: standardOutput)
         } catch {
             fail(String(describing: error))
         }
@@ -104,9 +108,9 @@ struct VaultCommand {
         do {
             let count = try KeychainStore().purgeSecrets()
             if count == 0 {
-                writeStandardOutput("nothing to purge\n")
+                write("nothing to purge\n", to: standardOutput)
             } else {
-                writeStandardOutput("purged \(count) secret\(count == 1 ? "" : "s")\n")
+                write("purged \(count) secret\(count == 1 ? "" : "s")\n", to: standardOutput)
             }
         } catch {
             fail(String(describing: error))
@@ -119,46 +123,88 @@ struct VaultCommand {
         }
 
         let specifications = arguments[..<separator]
-        let commandArguments = arguments[(separator + 1)...]
+        let commandArguments = Array(arguments[(separator + 1)...])
         guard let command = commandArguments.first else {
             fail("vault: missing command")
         }
 
-        var environment = ProcessInfo.processInfo.environment
         let store = KeychainStore()
+        var overrides: [(String, String)] = []
         for rawSpecification in specifications {
             switch EnvironmentSpecification(rawSpecification) {
             case let .literal(name, value):
-                environment[name] = value
+                overrides.append((name, value))
             case let .keychain(name):
                 do {
-                    environment[name] = try store.secret(named: name)
+                    overrides.append((name, try store.secret(named: name)))
                 } catch {
                     fail(String(describing: error))
                 }
             }
         }
 
-        let executable = resolveExecutable(command, path: environment["PATH"])
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: executable)
-        process.arguments = Array(commandArguments.dropFirst())
-        process.environment = environment
-        process.standardInput = FileHandle.standardInput
-        process.standardOutput = FileHandle.standardOutput
-        process.standardError = FileHandle.standardError
+        spawn(command: command, arguments: commandArguments, overrides: overrides)
+    }
 
-        do {
-            try process.run()
-        } catch {
-            fail("vault: \(error)")
+    private static func spawn(
+        command: String,
+        arguments: [String],
+        overrides: [(String, String)]
+    ) -> Never {
+        var cArguments = unsafe [UnsafeMutablePointer<CChar>?]()
+        unsafe cArguments.reserveCapacity(arguments.count + 1)
+        for argument in arguments {
+            guard let pointer = unsafe argument.withCString({ unsafe cDuplicate($0) }) else {
+                fail("vault: failed to prepare command")
+            }
+            unsafe cArguments.append(pointer)
         }
-        process.waitUntilExit()
+        unsafe cArguments.append(nil)
 
-        if process.terminationReason == .uncaughtSignal {
-            exit(Int32(128 + Int(process.terminationStatus)))
+        for (name, value) in overrides {
+            let result = unsafe name.withCString { namePointer in
+                unsafe value.withCString { valuePointer in
+                    unsafe cSetEnvironment(namePointer, valuePointer, 1)
+                }
+            }
+            guard result == 0 else {
+                fail("vault: failed to set environment")
+            }
         }
-        exit(process.terminationStatus)
+
+        let environment = unsafe cGetEnvironment()?.pointee
+        var child: Int32 = 0
+        let spawnStatus = unsafe command.withCString { commandPointer in
+            unsafe cArguments.withUnsafeMutableBufferPointer { buffer in
+                unsafe cSpawn(
+                    &child,
+                    commandPointer,
+                    nil,
+                    nil,
+                    buffer.baseAddress,
+                    environment
+                )
+            }
+        }
+        guard spawnStatus == 0 else {
+            fail("vault: failed to spawn command")
+        }
+
+        var waitStatus: Int32 = 0
+        var waitResult: Int32
+        repeat {
+            waitResult = unsafe cWait(child, &waitStatus, 0)
+        } while waitResult == -1 && errnoValue() == Posix.interrupted
+
+        guard waitResult == child else {
+            fail("vault: failed waiting for command")
+        }
+
+        let signal = waitStatus & 0x7F
+        if signal != 0 && signal != 0x7F {
+            unsafe cExit(128 + signal)
+        }
+        unsafe cExit((waitStatus >> 8) & 0xFF)
     }
 
     private static func requireExactArguments(
@@ -178,80 +224,94 @@ struct VaultCommand {
     }
 
     private static func readSecret(name: String, silent: Bool) throws -> String {
-        if isatty(STDIN_FILENO) == 1 {
+        if unsafe cIsATTY(standardInput) == 1 {
             if !silent {
-                writeStandardError("Enter value for \(name): ")
+                write("Enter value for \(name): ", to: standardError)
             }
             return try readWithoutEcho(silent: silent)
         }
 
-        let data = FileHandle.standardInput.readDataToEndOfFile()
-        guard let value = String(data: data, encoding: .utf8) else {
-            throw InputError.invalidUTF8
-        }
-        return stripTrailingLineEndings(value)
+        return try decodeInput(readAll())
     }
 
     /// Read terminal bytes with echo disabled, restoring the terminal before
     /// returning an input error so a failed read cannot leave the user's shell
     /// in raw mode.
     private static func readWithoutEcho(silent: Bool) throws -> String {
-        var original = termios()
-        guard unsafe tcgetattr(STDIN_FILENO, &original) == 0 else {
-            return try readFallbackLine()
+        var original = PosixTermios()
+        guard unsafe cTCGetAttributes(standardInput, &original) == 0 else {
+            return try decodeInput(readAll())
         }
 
         var modified = original
-        let echoFlags = tcflag_t(ECHO) | tcflag_t(ECHONL) | tcflag_t(ICANON)
+        let echoFlags = Posix.echo | Posix.echoNewline | Posix.canonical
         modified.c_lflag &= ~echoFlags
-        _ = unsafe tcsetattr(STDIN_FILENO, TCSANOW, &modified)
-        defer { unsafe _ = tcsetattr(STDIN_FILENO, TCSANOW, &original) }
+        _ = unsafe withUnsafePointer(to: &modified) {
+            unsafe cTCSetAttributes(standardInput, Posix.terminalNow, $0)
+        }
+        defer {
+            unsafe _ = withUnsafePointer(to: &original) {
+                unsafe cTCSetAttributes(standardInput, Posix.terminalNow, $0)
+            }
+        }
 
         var bytes: [UInt8] = []
         var byte: UInt8 = 0
         while true {
             let count = unsafe withUnsafeMutablePointer(to: &byte) { pointer in
-                unsafe Darwin.read(STDIN_FILENO, pointer, 1)
+                unsafe cRead(standardInput, pointer, 1)
             }
             guard count == 1 else {
                 throw InputError.readFailed
             }
 
             switch byte {
-            case UInt8(ascii: "\n"), UInt8(ascii: "\r"):
+            case 10, 13:
                 if !silent {
-                    writeStandardError("\n")
+                    write("\n", to: standardError)
                 }
                 return try decodeInput(bytes)
-            case 0x7f:
+            case 0x7F:
                 if !bytes.isEmpty {
                     bytes.removeLast()
                     if !silent {
-                        writeStandardError("\u{8} \u{8}")
+                        write("\u{8} \u{8}", to: standardError)
                     }
                 }
             default:
                 bytes.append(byte)
                 if !silent {
-                    writeStandardError("*")
+                    write("*", to: standardError)
                 }
             }
         }
     }
 
-    private static func readFallbackLine() throws -> String {
-        let data = FileHandle.standardInput.readData(ofLength: 4096)
-        guard let value = String(data: data, encoding: .utf8) else {
-            throw InputError.invalidUTF8
+    private static func readAll() throws -> [UInt8] {
+        var result: [UInt8] = []
+        var buffer = [UInt8](repeating: 0, count: 4096)
+        while true {
+            let count = unsafe buffer.withUnsafeMutableBytes { bytes in
+                unsafe cRead(standardInput, bytes.baseAddress, bytes.count)
+            }
+            if count == 0 {
+                return result
+            }
+            if count < 0 {
+                if errnoValue() == Posix.interrupted {
+                    continue
+                }
+                throw InputError.readFailed
+            }
+            result.append(contentsOf: buffer.prefix(Int(count)))
         }
-        return stripTrailingLineEndings(value)
     }
 
     private static func decodeInput(_ bytes: [UInt8]) throws -> String {
-        guard let value = String(data: Data(bytes), encoding: .utf8) else {
+        guard let value = decodeUTF8(bytes) else {
             throw InputError.invalidUTF8
         }
-        return value
+        return stripTrailingLineEndings(value)
     }
 }
 
@@ -269,30 +329,92 @@ private enum InputError: Error, CustomStringConvertible {
     }
 }
 
-private func resolveExecutable(_ command: String, path: String?) -> String {
-    if command.contains("/") {
-        return command
+private func decodeUTF8(_ bytes: [UInt8]) -> String? {
+    var index = 0
+    while index < bytes.count {
+        let first = bytes[index]
+        if first < 0x80 {
+            index += 1
+            continue
+        }
+        if first >= 0xC2 && first <= 0xDF {
+            guard index + 1 < bytes.count, isContinuation(bytes[index + 1]) else {
+                return nil
+            }
+            index += 2
+            continue
+        }
+        if first >= 0xE0 && first <= 0xEF {
+            guard index + 2 < bytes.count,
+                  isContinuation(bytes[index + 1]),
+                  isContinuation(bytes[index + 2]),
+                  !(first == 0xE0 && bytes[index + 1] < 0xA0),
+                  !(first == 0xED && bytes[index + 1] >= 0xA0) else {
+                return nil
+            }
+            index += 3
+            continue
+        }
+        if first >= 0xF0 && first <= 0xF4 {
+            guard index + 3 < bytes.count,
+                  isContinuation(bytes[index + 1]),
+                  isContinuation(bytes[index + 2]),
+                  isContinuation(bytes[index + 3]),
+                  !(first == 0xF0 && bytes[index + 1] < 0x90),
+                  !(first == 0xF4 && bytes[index + 1] >= 0x90) else {
+                return nil
+            }
+            index += 4
+            continue
+        }
+        return nil
     }
+    return String(decoding: bytes, as: UTF8.self)
+}
 
-    let searchPath = path ?? "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-    for directory in searchPath.split(separator: ":", omittingEmptySubsequences: false) {
-        let candidate = directory.isEmpty ? command : "\(directory)/\(command)"
-        if FileManager.default.isExecutableFile(atPath: candidate) {
-            return candidate
+private func isContinuation(_ byte: UInt8) -> Bool {
+    byte >= 0x80 && byte <= 0xBF
+}
+
+private func stripTrailingLineEndings(_ value: String) -> String {
+    var scalars = value.unicodeScalars
+    if scalars.last?.value == 0x0A {
+        scalars.removeLast()
+    }
+    if scalars.last?.value == 0x0D {
+        scalars.removeLast()
+    }
+    return String(scalars)
+}
+
+private func write(_ value: String, to descriptor: Int32) {
+    write(Array(value.utf8), to: descriptor)
+}
+
+private func write(_ bytes: [UInt8], to descriptor: Int32) {
+    var offset = 0
+    unsafe bytes.withUnsafeBytes { buffer in
+        while offset < bytes.count {
+            let count = unsafe cWrite(
+                descriptor,
+                buffer.baseAddress!.advanced(by: offset),
+                bytes.count - offset
+            )
+            if count <= 0 {
+                return
+            }
+            offset += count
         }
     }
-    return command
-}
-
-private func writeStandardOutput(_ value: String) {
-    FileHandle.standardOutput.write(Data(value.utf8))
-}
-
-private func writeStandardError(_ value: String) {
-    FileHandle.standardError.write(Data(value.utf8))
 }
 
 private func fail(_ message: String) -> Never {
-    writeStandardError(message + "\n")
-    exit(1)
+    write(message + "\n", to: standardError)
+    unsafe cExit(1)
 }
+
+private func errnoValue() -> Int32 {
+    unsafe cErrno().pointee
+}
+
+VaultCommand.main()
