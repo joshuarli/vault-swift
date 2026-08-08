@@ -1,0 +1,45 @@
+// swift-tools-version: 6.3
+import PackageDescription
+
+let swift6Settings: [SwiftSetting] = [
+    .swiftLanguageMode(.v6),
+    .enableUpcomingFeature("NonisolatedNonsendingByDefault"),
+    .strictMemorySafety(),
+]
+
+let releaseSettings: [SwiftSetting] = [
+    // The executable is small and synchronous; whole-module optimization lets
+    // the release compiler inline the CLI and Keychain boundary together.
+    .unsafeFlags(["-whole-module-optimization"], .when(configuration: .release)),
+]
+
+let package = Package(
+    name: "vault",
+    platforms: [.macOS("26.0")],
+    products: [
+        .library(name: "VaultCore", targets: ["VaultCore"]),
+        .executable(name: "vault", targets: ["vault"]),
+    ],
+    targets: [
+        .target(
+            name: "VaultCore",
+            path: "Sources/VaultCore",
+            swiftSettings: swift6Settings + releaseSettings
+        ),
+        .executableTarget(
+            name: "vault",
+            dependencies: ["VaultCore"],
+            path: "Sources/vault",
+            swiftSettings: swift6Settings + releaseSettings,
+            linkerSettings: [
+                .linkedFramework("Security"),
+            ]
+        ),
+        .testTarget(
+            name: "VaultCoreTests",
+            dependencies: ["VaultCore"],
+            path: "Tests/VaultCoreTests",
+            swiftSettings: swift6Settings
+        ),
+    ]
+)
