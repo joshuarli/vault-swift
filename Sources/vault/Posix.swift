@@ -42,11 +42,6 @@ func cSetEnvironment(_ name: UnsafePointer<CChar>, _ value: UnsafePointer<CChar>
 }
 
 @inline(__always)
-func cDuplicate(_ string: UnsafePointer<CChar>) -> UnsafeMutablePointer<CChar>? {
-    unsafe strdup(string)
-}
-
-@inline(__always)
 func cSpawn(
     _ process: UnsafeMutablePointer<CInt>,
     _ executable: UnsafePointer<CChar>,
@@ -89,4 +84,54 @@ func cErrno() -> UnsafeMutablePointer<CInt> {
 @inline(__always)
 func cExit(_ status: CInt) -> Never {
     exit(status)
+}
+
+@inline(__always)
+func cKeychainSet(
+    _ name: UnsafePointer<CChar>,
+    _ value: UnsafeRawPointer?,
+    _ length: Int
+) -> CInt {
+    unsafe vault_keychain_set(
+        name,
+        value?.assumingMemoryBound(to: UInt8.self),
+        length
+    )
+}
+
+@inline(__always)
+func cKeychainGet(
+    _ name: UnsafePointer<CChar>,
+    _ value: UnsafeMutablePointer<UnsafeMutablePointer<UInt8>?>,
+    _ length: UnsafeMutablePointer<Int>
+) -> CInt {
+    unsafe vault_keychain_get(name, value, length)
+}
+
+@inline(__always)
+func cKeychainDelete(_ name: UnsafePointer<CChar>) -> CInt {
+    unsafe vault_keychain_delete(name)
+}
+
+@inline(__always)
+func cKeychainList(
+    _ names: UnsafeMutablePointer<UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?>,
+    _ count: UnsafeMutablePointer<Int>
+) -> CInt {
+    unsafe vault_keychain_list(names, count)
+}
+
+@inline(__always)
+func cKeychainPurge(_ count: UnsafeMutablePointer<Int>) -> CInt {
+    unsafe vault_keychain_purge(count)
+}
+
+@inline(__always)
+func cKeychainStatusMessage(_ status: CInt) -> UnsafeMutablePointer<CChar>? {
+    unsafe vault_keychain_status_message(status)
+}
+
+@inline(__always)
+func cKeychainFree(_ pointer: UnsafeMutableRawPointer) {
+    unsafe vault_keychain_free(pointer)
 }

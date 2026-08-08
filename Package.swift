@@ -28,7 +28,7 @@ let package = Package(
         ),
         .executableTarget(
             name: "vault",
-            dependencies: ["VaultCore", "CSystem"],
+            dependencies: ["CSystem"],
             path: "Sources/vault",
             swiftSettings: swift6Settings + releaseSettings,
             linkerSettings: [
@@ -37,7 +37,14 @@ let package = Package(
                 // Match the Rust dist profile: local Swift symbols are not
                 // part of the shipped exec-wrapper contract.
                 .unsafeFlags(
-                    ["-Xlinker", "-S", "-Xlinker", "-x"],
+                    [
+                        "-Xlinker", "-S",
+                        "-Xlinker", "-x",
+                        "-Xlinker", "-dead_strip_dylibs",
+                        "-Xlinker", "-exported_symbols_list",
+                        "-Xlinker", "/dev/null",
+                        "-Xlinker", "-no_function_starts",
+                    ],
                     .when(configuration: .release)
                 ),
             ]

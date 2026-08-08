@@ -1,8 +1,7 @@
-import VaultCore
-
 private let standardInput: Int32 = 0
 private let standardOutput: Int32 = 1
 private let standardError: Int32 = 2
+private let keychainItemNotFound: Int32 = -25300
 
 private let usage = """
 vault — macOS Keychain secret manager
@@ -31,161 +30,139 @@ Examples:
 """
 
 struct VaultCommand {
-    static func main() {
-        let arguments = Array(CommandLine.arguments.dropFirst())
-        guard let first = arguments.first else {
+    @unsafe static func main() {
+        let argumentCount = Int(CommandLine.argc)
+        let argumentVector = unsafe CommandLine.unsafeArgv
+        guard argumentCount > 1, let firstPointer = unsafe argumentVector[1] else {
             write(usage, to: standardOutput)
             return
         }
+        let first = unsafe String(cString: firstPointer)
 
         switch first {
         case "set":
-            set(arguments: arguments, silent: false)
+            unsafe set(argv: argumentVector, argc: argumentCount, silent: false)
         case "isset":
-            set(arguments: arguments, silent: true)
+            unsafe set(argv: argumentVector, argc: argumentCount, silent: true)
         case "get":
-            get(arguments: arguments)
+            unsafe get(argv: argumentVector, argc: argumentCount)
         case "rm":
-            remove(arguments: arguments)
+            unsafe remove(argv: argumentVector, argc: argumentCount)
         case "ls":
-            list(arguments: arguments)
+            unsafe list(argv: argumentVector, argc: argumentCount)
         case "purge":
             purge()
         case "-h", "--help", "help":
             write(usage, to: standardOutput)
         default:
-            execute(arguments: arguments)
+            unsafe execute(argv: argumentVector, argc: argumentCount)
         }
     }
 
-    private static func set(arguments: [String], silent: Bool) {
-        requireExactArguments(arguments, command: silent ? "isset" : "set", count: 2)
-        let name = arguments[1]
+    @unsafe private static func set(
+        argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>,
+        argc: Int,
+        silent: Bool
+    ) {
+        unsafe requireExactArguments(argv, argc: argc, command: silent ? "isset" : "set", count: 2)
+        let name = unsafe argument(argv, at: 2)
 
         do {
             let value = try readSecret(name: name, silent: silent)
-            try KeychainStore().setSecret(name: name, value: Array(value.utf8))
+            unsafe keychainSet(name: name, value: Array(value.utf8))
         } catch {
             fail(String(describing: error))
         }
     }
 
-    private static func get(arguments: [String]) {
-        requireExactArguments(arguments, command: "get", count: 2)
-        do {
-            let value = try KeychainStore().secret(named: arguments[1])
-            write(value + "\n", to: standardOutput)
-        } catch {
-            fail(String(describing: error))
-        }
+    @unsafe private static func get(
+        argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>,
+        argc: Int
+    ) {
+        unsafe requireExactArguments(argv, argc: argc, command: "get", count: 2)
+        let name = unsafe argument(argv, at: 2)
+        let value = unsafe keychainGet(name: name)
+        write(value, to: standardOutput)
+        write("\n", to: standardOutput)
     }
 
-    private static func remove(arguments: [String]) {
-        requireExactArguments(arguments, command: "rm", count: 2)
-        do {
-            try KeychainStore().deleteSecret(named: arguments[1])
-        } catch {
-            fail(String(describing: error))
-        }
+    @unsafe private static func remove(
+        argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>,
+        argc: Int
+    ) {
+        unsafe requireExactArguments(argv, argc: argc, command: "rm", count: 2)
+        let name = unsafe argument(argv, at: 2)
+        unsafe keychainDelete(name: name)
     }
 
-    private static func list(arguments: [String]) {
-        guard arguments.count == 1 else {
+    @unsafe private static func list(
+        argv _: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>,
+        argc: Int
+    ) {
+        guard argc == 2 else {
             fail("vault: ls takes no arguments")
         }
-        do {
-            let names = try KeychainStore().listSecrets()
-            guard !names.isEmpty else {
-                return
-            }
-            write(names.joined(separator: "\n") + "\n", to: standardOutput)
-        } catch {
-            fail(String(describing: error))
+        for name in unsafe keychainList() {
+            write(name, to: standardOutput)
+            write("\n", to: standardOutput)
         }
     }
 
     private static func purge() {
-        do {
-            let count = try KeychainStore().purgeSecrets()
-            if count == 0 {
-                write("nothing to purge\n", to: standardOutput)
-            } else {
-                write("purged \(count) secret\(count == 1 ? "" : "s")\n", to: standardOutput)
-            }
-        } catch {
-            fail(String(describing: error))
+        let count = unsafe keychainPurge()
+        if count == 0 {
+            write("nothing to purge\n", to: standardOutput)
+        } else {
+            write("purged \(count) secret\(count == 1 ? "" : "s")\n", to: standardOutput)
         }
     }
 
-    private static func execute(arguments: [String]) {
-        guard let separator = arguments.firstIndex(of: "--") else {
+    @unsafe private static func execute(
+        argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>,
+        argc: Int
+    ) {
+        var separator = 0
+        while separator < argc && !(unsafe isSeparator(unsafe argv[separator]!)) {
+            separator += 1
+        }
+        guard separator < argc else {
             fail("vault: expected '--' before command")
         }
 
-        let specifications = arguments[..<separator]
-        let commandArguments = Array(arguments[(separator + 1)...])
-        guard let command = commandArguments.first else {
+        let commandIndex = separator + 1
+        guard commandIndex < argc else {
             fail("vault: missing command")
         }
 
-        let store = KeychainStore()
-        var overrides: [(String, String)] = []
-        for rawSpecification in specifications {
-            switch EnvironmentSpecification(rawSpecification) {
+        for index in 1..<separator {
+            let rawSpecification = unsafe argument(argv, at: index)
+            switch EnvironmentSpec(rawSpecification) {
             case let .literal(name, value):
-                overrides.append((name, value))
+                setEnvironment(name: name, value: value)
             case let .keychain(name):
-                do {
-                    overrides.append((name, try store.secret(named: name)))
-                } catch {
-                    fail(String(describing: error))
-                }
+                setEnvironment(name: name, value: unsafe keychainGet(name: name))
             }
         }
 
-        spawn(command: command, arguments: commandArguments, overrides: overrides)
+        unsafe spawn(argv: argv, commandIndex: commandIndex)
     }
 
-    private static func spawn(
-        command: String,
-        arguments: [String],
-        overrides: [(String, String)]
+    @unsafe private static func spawn(
+        argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>,
+        commandIndex: Int
     ) -> Never {
-        var cArguments = unsafe [UnsafeMutablePointer<CChar>?]()
-        unsafe cArguments.reserveCapacity(arguments.count + 1)
-        for argument in arguments {
-            guard let pointer = unsafe argument.withCString({ unsafe cDuplicate($0) }) else {
-                fail("vault: failed to prepare command")
-            }
-            unsafe cArguments.append(pointer)
-        }
-        unsafe cArguments.append(nil)
-
-        for (name, value) in overrides {
-            let result = unsafe name.withCString { namePointer in
-                unsafe value.withCString { valuePointer in
-                    unsafe cSetEnvironment(namePointer, valuePointer, 1)
-                }
-            }
-            guard result == 0 else {
-                fail("vault: failed to set environment")
-            }
-        }
-
         let environment = unsafe cGetEnvironment()
         var child: Int32 = 0
-        let spawnStatus = unsafe command.withCString { commandPointer in
-            unsafe cArguments.withUnsafeMutableBufferPointer { buffer in
-                unsafe cSpawn(
-                    &child,
-                    commandPointer,
-                    nil,
-                    nil,
-                    buffer.baseAddress,
-                    environment
-                )
-            }
-        }
+        let childArguments = unsafe argv.advanced(by: commandIndex)
+        let commandPointer = unsafe childArguments.pointee!
+        let spawnStatus = unsafe cSpawn(
+            &child,
+            UnsafePointer(commandPointer),
+            nil,
+            nil,
+            childArguments,
+            environment
+        )
         guard spawnStatus == 0 else {
             fail("vault: failed to spawn command")
         }
@@ -207,19 +184,43 @@ struct VaultCommand {
         cExit((waitStatus >> 8) & 0xFF)
     }
 
-    private static func requireExactArguments(
-        _ arguments: [String],
+    @unsafe private static func requireExactArguments(
+        _ argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>,
+        argc: Int,
         command: String,
         count: Int
     ) {
-        guard arguments.count >= count else {
+        guard argc - 1 >= count else {
             fail("vault: missing name for \(command)")
         }
-        guard arguments.count <= count else {
-            fail("vault: unexpected argument: \(arguments[count])")
+        guard argc - 1 <= count else {
+            let unexpected = unsafe argument(argv, at: count + 1)
+            fail("vault: unexpected argument: \(unexpected)")
         }
-        guard !arguments[1].isEmpty else {
+        guard !(unsafe argument(argv, at: 2)).isEmpty else {
             fail("vault: empty name not allowed")
+        }
+    }
+
+    @unsafe private static func argument(
+        _ argv: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>,
+        at index: Int
+    ) -> String {
+        unsafe String(cString: unsafe argv[index]!)
+    }
+
+    @unsafe private static func isSeparator(_ pointer: UnsafeMutablePointer<CChar>) -> Bool {
+        unsafe pointer[0] == 45 && pointer[1] == 45 && pointer[2] == 0
+    }
+
+    private static func setEnvironment(name: String, value: String) {
+        let result = unsafe name.withCString { namePointer in
+            unsafe value.withCString { valuePointer in
+                unsafe cSetEnvironment(namePointer, valuePointer, 1)
+            }
+        }
+        guard result == 0 else {
+            fail("vault: failed to set environment")
         }
     }
 
@@ -311,7 +312,130 @@ struct VaultCommand {
         guard let value = decodeUTF8(bytes) else {
             throw InputError.invalidUTF8
         }
-        return stripTrailingLineEndings(value)
+        return stripInputLineEndings(value)
+    }
+}
+
+@unsafe private func keychainSet(name: String, value: [UInt8]) {
+    let status = unsafe value.withUnsafeBytes { bytes in
+        unsafe name.withCString { namePointer in
+            unsafe cKeychainSet(namePointer, bytes.baseAddress, value.count)
+        }
+    }
+    guard status == 0 else {
+        keychainFailure(action: "set", name: name, status: status)
+    }
+}
+
+@unsafe private func keychainGet(name: String) -> String {
+    var rawValue: UnsafeMutablePointer<UInt8>?
+    var valueLength = 0
+    let status = unsafe name.withCString { namePointer in
+        unsafe cKeychainGet(namePointer, &rawValue, &valueLength)
+    }
+    guard status == 0 else {
+        keychainFailure(action: "get", name: name, status: status)
+    }
+    defer {
+        if let rawValue = unsafe rawValue {
+            unsafe cKeychainFree(UnsafeMutableRawPointer(rawValue))
+        }
+    }
+
+    let bytes: [UInt8]
+    if let rawValue = unsafe rawValue {
+        bytes = unsafe Array(unsafe UnsafeBufferPointer(start: rawValue, count: valueLength))
+    } else {
+        bytes = []
+    }
+    guard let value = decodeUTF8(bytes) else {
+        fail("vault: invalid UTF-8 in \(name)")
+    }
+    return value
+}
+
+@unsafe private func keychainDelete(name: String) {
+    let status = unsafe name.withCString { namePointer in
+        unsafe cKeychainDelete(namePointer)
+    }
+    guard status == 0 else {
+        keychainFailure(action: "delete", name: name, status: status)
+    }
+}
+
+@unsafe private func keychainList() -> [String] {
+    var rawNames: UnsafeMutablePointer<UnsafeMutablePointer<CChar>?>?
+    var nameCount = 0
+    let status = unsafe cKeychainList(&rawNames, &nameCount)
+    guard status == 0 else {
+        keychainFailure(action: "list", name: "", status: status)
+    }
+    guard let rawNames = unsafe rawNames else {
+        return []
+    }
+    defer {
+        unsafe cKeychainFree(UnsafeMutableRawPointer(rawNames))
+    }
+
+    var names: [String] = []
+    names.reserveCapacity(nameCount)
+    for index in 0..<nameCount {
+        guard let rawName = unsafe rawNames[index] else {
+            continue
+        }
+        names.append(unsafe String(cString: unsafe UnsafePointer(rawName)))
+        unsafe cKeychainFree(UnsafeMutableRawPointer(rawName))
+    }
+    return names
+}
+
+@unsafe private func keychainPurge() -> Int {
+    var count = 0
+    let status = unsafe cKeychainPurge(&count)
+    guard status == 0 else {
+        keychainFailure(action: "purge", name: "", status: status)
+    }
+    return count
+}
+
+@unsafe private func keychainStatusMessage(_ status: Int32) -> String? {
+    guard let rawMessage = unsafe cKeychainStatusMessage(status) else {
+        return nil
+    }
+    defer {
+        unsafe cKeychainFree(UnsafeMutableRawPointer(rawMessage))
+    }
+    return unsafe String(cString: unsafe UnsafePointer(rawMessage))
+}
+
+private func keychainFailure(action: String, name: String, status: Int32) -> Never {
+    if status == keychainItemNotFound {
+        if action == "get" {
+            fail("vault: \(name): could not be found")
+        }
+        if action == "delete" {
+            fail("vault: \(name): not found")
+        }
+    }
+    let subject = name.isEmpty ? "vault:" : "vault: \(name):"
+    let message = unsafe keychainStatusMessage(status) ?? "OSStatus \(status)"
+    fail("\(subject) \(action) failed: \(message) (OSStatus \(status))")
+}
+
+private enum EnvironmentSpec {
+    case keychain(name: String)
+    case literal(name: String, value: String)
+
+    init(_ specification: String) {
+        if let equals = specification.firstIndex(of: "=") {
+            let name = String(specification[..<equals])
+            let value = String(specification[specification.index(after: equals)...])
+            if !name.isEmpty && !value.contains("=") {
+                self = .literal(name: name, value: value)
+                return
+            }
+        }
+        self = .keychain(name: specification)
     }
 }
 
@@ -376,7 +500,7 @@ private func isContinuation(_ byte: UInt8) -> Bool {
     byte >= 0x80 && byte <= 0xBF
 }
 
-private func stripTrailingLineEndings(_ value: String) -> String {
+private func stripInputLineEndings(_ value: String) -> String {
     var scalars = value.unicodeScalars
     if scalars.last?.value == 0x0A {
         scalars.removeLast()
@@ -417,4 +541,4 @@ private func errnoValue() -> Int32 {
     unsafe cErrno().pointee
 }
 
-VaultCommand.main()
+unsafe VaultCommand.main()
