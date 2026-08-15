@@ -1,33 +1,69 @@
 # vault
 
-`vault` stores secrets in the macOS login Keychain and injects them into
-commands without invoking a shell.
+Store secrets in the macOS Keychain and inject them into commands.
 
-```text
-vault set   NAME
-vault isset NAME
-vault get   NAME
-vault rm    NAME
-vault ls
-vault purge
-vault NAME OTHER_NAME LOG_LEVEL=debug -- command arg...
-```
+## Install
 
-Generic-password items use service `dev.joshuarli.vault`, with the environment
-variable name as the account. New items use the modern Keychain item APIs and
-therefore receive macOS’s normal application-scoped access policy. Rebuilding
-an ad-hoc-signed binary can require Keychain reauthorization.
-
-## Build
-
-This package requires macOS 26 and Swift 6.3. The package enables Swift 6
-language mode, `NonisolatedNonsendingByDefault`, and strict memory safety.
+### From source
 
 ```bash
-swift test
-swift build -c release --arch arm64
+make install
 ```
 
-The release executable is built with whole-module optimization and linker
-stripping (`-S` and `-x`). The implementation avoids Foundation and the Swift
-Darwin overlay in the executable path to keep this exec wrapper small.
+This builds the release profile (whole-module optimization, stripped symbols), code-signs the binary, and installs to `~/usr/bin/vault`.
+
+The first `make install` creates a self-signed code-signing identity named `Vault Signing` in your login Keychain (one-time setup) and imports it so only `codesign` can use it. Code-signing gives vault a stable identity so macOS stops prompting for keychain access on every rebuild.
+
+### Store a secret
+
+```bash
+vault set OPENAI_API_KEY
+```
+
+Prompts securely (echo disabled). Or pipe it in:
+
+```bash
+pbpaste | vault set OPENAI_API_KEY
+```
+
+### Retrieve a secret
+
+```bash
+vault get OPENAI_API_KEY
+```
+
+Prints the value and nothing else. Safe for `$(...)`.
+
+### Delete a secret
+
+```bash
+vault rm OPENAI_API_KEY
+```
+
+### List stored names
+
+```bash
+vault ls
+```
+
+Names only, never values.
+
+### Run a command with secrets
+
+```bash
+vault OPENAI_API_KEY DATABASE_URL -- cargo run
+```
+
+Looks up `OPENAI_API_KEY` and `DATABASE_URL` in the Keychain and injects them as environment variables.
+
+Mix with literal values:
+
+```bash
+vault OPENAI_API_KEY RUST_LOG=debug PORT=8080 -- cargo run
+```
+
+No `--`, no exec:
+
+```bash
+vault OPENAI_API_KEY cargo run   # error: expected '--' before command
+```
