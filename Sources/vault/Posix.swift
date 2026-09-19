@@ -127,6 +127,11 @@ func cKeychainPurge(_ count: UnsafeMutablePointer<Int>) -> CInt {
 }
 
 @inline(__always)
+func cKeychainLock() -> CInt {
+    vault_keychain_lock()
+}
+
+@inline(__always)
 func cKeychainStatusMessage(_ status: CInt) -> UnsafeMutablePointer<CChar>? {
     unsafe vault_keychain_status_message(status)
 }

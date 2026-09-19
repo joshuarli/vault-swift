@@ -25,6 +25,7 @@ int32_t vault_keychain_get(
 int32_t vault_keychain_delete(const char *name);
 int32_t vault_keychain_list(char ***names, size_t *count);
 int32_t vault_keychain_purge(size_t *count);
+int32_t vault_keychain_lock(void);
 char *vault_keychain_status_message(int32_t status);
 void vault_keychain_free(void *pointer);
 

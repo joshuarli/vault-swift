@@ -13,6 +13,7 @@ Usage:
   vault get   <NAME>            Print a secret to stdout
   vault rm    <NAME>            Delete a secret
   vault ls                      List all stored secret names
+  vault lock                    Reset authorization for every secret
   vault purge                   Delete every secret vault manages
 
   vault [ENV ...] -- <CMD> [ARGS ...]   Run CMD with secrets injected
@@ -50,6 +51,8 @@ struct VaultCommand {
             unsafe remove(argv: argumentVector, argc: argumentCount)
         case "ls":
             unsafe list(argv: argumentVector, argc: argumentCount)
+        case "lock":
+            lock(argc: argumentCount)
         case "purge":
             purge()
         case "-h", "--help", "help":
@@ -115,6 +118,14 @@ struct VaultCommand {
         } else {
             write("purged \(count) secret\(count == 1 ? "" : "s")\n", to: standardOutput)
         }
+    }
+
+    private static func lock(argc: Int) {
+        guard argc == 2 else {
+            fail("vault: lock takes no arguments")
+        }
+        keychainLock()
+        write("locked vault secrets\n", to: standardOutput)
     }
 
     @unsafe private static func execute(
@@ -396,6 +407,13 @@ struct VaultCommand {
         keychainFailure(action: "purge", name: "", status: status)
     }
     return count
+}
+
+private func keychainLock() {
+    let status = cKeychainLock()
+    guard status == 0 else {
+        keychainFailure(action: "lock", name: "", status: status)
+    }
 }
 
 @unsafe private func keychainStatusMessage(_ status: Int32) -> String? {

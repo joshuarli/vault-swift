@@ -1,6 +1,7 @@
 #include "CSystem.h"
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
+#include <sys/wait.h>
 
 // The executable does not use floating-point values. Satisfy Swift's
 // compatibility-library force-load hook locally so the weak float runtime
@@ -241,6 +242,42 @@ OSStatus vault_keychain_purge(size_t *count) {
     free(names);
     *count = name_count;
     return errSecSuccess;
+}
+
+OSStatus vault_keychain_lock(void) {
+    // Modern generic-password items carry a partition ACL that SecItemUpdate
+    // does not replace. The system security tool is the supported interface
+    // for clearing that ACL across every item with this service.
+    char *const arguments[] = {
+        "/usr/bin/security",
+        "set-generic-password-partition-list",
+        "-s",
+        "dev.joshuarli.vault",
+        "-S",
+        "",
+        NULL,
+    };
+    char ***environment = _NSGetEnviron();
+    if (environment == NULL || *environment == NULL) return errSecParam;
+
+    pid_t child = 0;
+    int spawn_status = posix_spawn(
+        &child,
+        arguments[0],
+        NULL,
+        NULL,
+        arguments,
+        *environment
+    );
+    if (spawn_status != 0) return errSecIO;
+
+    int wait_status = 0;
+    pid_t wait_result;
+    do {
+        wait_result = waitpid(child, &wait_status, 0);
+    } while (wait_result == -1 && errno == EINTR);
+    if (wait_result != child || !WIFEXITED(wait_status)) return errSecIO;
+    return WEXITSTATUS(wait_status) == 0 ? errSecSuccess : errSecAuthFailed;
 }
 
 char *vault_keychain_status_message(OSStatus status) {
