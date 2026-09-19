@@ -3,8 +3,7 @@ import Security
 
 /// The service namespace owned by vault. Accounts are environment variable
 /// names and values are stored as generic-password data in the login Keychain.
-/// New items use the modern item API, so macOS applies its normal
-/// application-scoped Keychain access policy.
+/// New items require user presence before their values can be read.
 public struct KeychainStore: Sendable {
     public static let service = "dev.joshuarli.vault"
 
@@ -17,9 +16,21 @@ public struct KeychainStore: Sendable {
     public func setSecret(name: String, value: [UInt8]) throws {
         try validate(name: name)
 
+        guard let accessControl = SecAccessControlCreateWithFlags(
+            kCFAllocatorDefault,
+            kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+            .userPresence,
+            nil
+        ) else {
+            throw KeychainError.operation(action: "set", name: name, status: errSecParam)
+        }
+
         let updateStatus = SecItemUpdate(
             query(service: service, name: name),
-            dictionary([(kSecValueData, data(value))])
+            dictionary([
+                (kSecValueData, data(value)),
+                (kSecAttrAccessControl, accessControl),
+            ])
         )
 
         if updateStatus == errSecSuccess {
@@ -29,7 +40,12 @@ public struct KeychainStore: Sendable {
             throw KeychainError.operation(action: "set", name: name, status: updateStatus)
         }
 
-        try add(service: service, name: name, value: value)
+        try add(
+            service: service,
+            name: name,
+            value: value,
+            accessControl: accessControl
+        )
     }
 
     public func secret(named name: String) throws -> String {
@@ -121,12 +137,18 @@ public struct KeychainStore: Sendable {
         return names.count
     }
 
-    private func add(service: String, name: String, value: [UInt8]) throws {
+    private func add(
+        service: String,
+        name: String,
+        value: [UInt8],
+        accessControl: SecAccessControl
+    ) throws {
         let attributes = dictionary([
             (kSecClass, kSecClassGenericPassword),
             (kSecAttrService, string(service)),
             (kSecAttrAccount, string(name)),
             (kSecValueData, data(value)),
+            (kSecAttrAccessControl, accessControl),
         ])
         let status = SecItemAdd(attributes, nil)
 

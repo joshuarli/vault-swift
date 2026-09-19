@@ -32,7 +32,7 @@ Generic-password items in the login Keychain:
 - **Account:** the environment variable name
 - **Password:** the secret value
 
-New items use the modern item API, so macOS applies its normal application-scoped access policy; an ad-hoc-signed rebuild can require reauthorization. `make install` code-signs with a stable self-signed identity to avoid that.
+New and updated items use `kSecAccessControlUserPresence`, so reading a value requires Touch ID or the login password. `make install` code-signs with a stable self-signed identity to avoid unrelated application reauthorization prompts.
 
 ## Exec mode
 

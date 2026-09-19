@@ -12,7 +12,7 @@ make install
 
 This builds the release profile (whole-module optimization, stripped symbols), code-signs the binary, and installs to `~/usr/bin/vault`.
 
-The first `make install` creates a self-signed code-signing identity named `Vault Signing` in your login Keychain (one-time setup) and imports it so only `codesign` can use it. Code-signing gives vault a stable identity so macOS stops prompting for keychain access on every rebuild.
+The first `make install` creates a self-signed code-signing identity named `Vault Signing` in your login Keychain (one-time setup) and imports it so only `codesign` can use it. Code-signing gives vault a stable application identity; it does not bypass the authentication required for secret values.
 
 ### Store a secret
 
@@ -32,7 +32,7 @@ pbpaste | vault set OPENAI_API_KEY
 vault get OPENAI_API_KEY
 ```
 
-Prints the value and nothing else. Safe for `$(...)`.
+Prompts for Touch ID or the login password, then prints the value and nothing else. Safe for `$(...)`.
 
 ### Delete a secret
 
@@ -54,7 +54,7 @@ Names only, never values.
 vault OPENAI_API_KEY DATABASE_URL -- cargo run
 ```
 
-Looks up `OPENAI_API_KEY` and `DATABASE_URL` in the Keychain and injects them as environment variables.
+Authenticates before looking up `OPENAI_API_KEY` and `DATABASE_URL` in the Keychain, then injects them as environment variables.
 
 Mix with literal values:
 

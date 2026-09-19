@@ -2,6 +2,8 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <Security/Security.h>
 
+static const char *vault_service = "dev.joshuarli.vault";
+
 // The executable does not use floating-point values. Satisfy Swift's
 // compatibility-library force-load hook locally so the weak float runtime
 // dylib is not added to this integer-only wrapper.
@@ -28,7 +30,7 @@ static CFMutableDictionaryRef vault_dictionary(void) {
 
 static CFMutableDictionaryRef vault_query(const char *name) {
     CFStringRef account = vault_string(name);
-    CFStringRef service = vault_string("dev.joshuarli.vault");
+    CFStringRef service = vault_string(vault_service);
     if (account == NULL || service == NULL) {
         if (account != NULL) CFRelease(account);
         if (service != NULL) CFRelease(service);
@@ -53,7 +55,8 @@ static CFMutableDictionaryRef vault_query(const char *name) {
 
 static CFMutableDictionaryRef vault_value_attributes(
     const uint8_t *value,
-    size_t value_length
+    size_t value_length,
+    SecAccessControlRef access_control
 ) {
     CFDataRef data = CFDataCreate(
         kCFAllocatorDefault,
@@ -68,8 +71,23 @@ static CFMutableDictionaryRef vault_value_attributes(
         return NULL;
     }
     CFDictionarySetValue(attributes, kSecValueData, data);
+    if (access_control != NULL) {
+        CFDictionarySetValue(attributes, kSecAttrAccessControl, access_control);
+    }
     CFRelease(data);
     return attributes;
+}
+
+static SecAccessControlRef vault_access_control(void) {
+    CFErrorRef error = NULL;
+    SecAccessControlRef access_control = SecAccessControlCreateWithFlags(
+        kCFAllocatorDefault,
+        kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
+        kSecAccessControlUserPresence,
+        &error
+    );
+    if (error != NULL) CFRelease(error);
+    return access_control;
 }
 
 OSStatus vault_keychain_set(
@@ -77,27 +95,46 @@ OSStatus vault_keychain_set(
     const uint8_t *value,
     size_t value_length
 ) {
+    SecAccessControlRef access_control = vault_access_control();
+    if (access_control == NULL) return errSecParam;
+
     CFMutableDictionaryRef query = vault_query(name);
-    CFMutableDictionaryRef update = vault_value_attributes(value, value_length);
+    CFMutableDictionaryRef update = vault_value_attributes(
+        value,
+        value_length,
+        access_control
+    );
     if (query == NULL || update == NULL) {
         if (query != NULL) CFRelease(query);
         if (update != NULL) CFRelease(update);
+        CFRelease(access_control);
         return errSecParam;
     }
 
     OSStatus status = SecItemUpdate(query, update);
     CFRelease(query);
     CFRelease(update);
-    if (status == errSecSuccess) return status;
-    if (status != errSecItemNotFound) return status;
+    if (status == errSecSuccess) {
+        CFRelease(access_control);
+        return status;
+    }
+    if (status != errSecItemNotFound) {
+        CFRelease(access_control);
+        return status;
+    }
 
-    CFMutableDictionaryRef attributes = vault_value_attributes(value, value_length);
+    CFMutableDictionaryRef attributes = vault_value_attributes(
+        value,
+        value_length,
+        access_control
+    );
+    CFRelease(access_control);
     if (attributes == NULL) {
         return errSecParam;
     }
     CFDictionarySetValue(attributes, kSecClass, kSecClassGenericPassword);
     CFStringRef account = vault_string(name);
-    CFStringRef service = vault_string("dev.joshuarli.vault");
+    CFStringRef service = vault_string(vault_service);
     if (account == NULL || service == NULL) {
         if (account != NULL) CFRelease(account);
         if (service != NULL) CFRelease(service);
@@ -164,7 +201,10 @@ static int vault_compare_names(const void *lhs, const void *rhs) {
     return strcmp(*left, *right);
 }
 
-OSStatus vault_keychain_list(char ***names, size_t *count) {
+OSStatus vault_keychain_list(
+    char ***names,
+    size_t *count
+) {
     *names = NULL;
     *count = 0;
     CFMutableDictionaryRef query = vault_query("");
@@ -227,10 +267,11 @@ OSStatus vault_keychain_purge(size_t *count) {
     size_t name_count = 0;
     OSStatus status = vault_keychain_list(&names, &name_count);
     if (status != errSecSuccess) return status;
+
     for (size_t index = 0; index < name_count; index++) {
         status = vault_keychain_delete(names[index]);
         free(names[index]);
-        if (status != errSecSuccess) {
+        if (status != errSecSuccess && status != errSecItemNotFound) {
             for (size_t free_index = index + 1; free_index < name_count; free_index++) {
                 free(names[free_index]);
             }
